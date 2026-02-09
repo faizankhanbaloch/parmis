@@ -177,9 +177,6 @@ def svg_art(seed: int, label: str) -> str:
   <text x="72" y="120" fill="rgba(255,255,255,.92)"
         font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"
         font-weight="900" font-size="54">{label}</text>
-  <text x="72" y="168" fill="rgba(226,232,240,.78)"
-        font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial"
-        font-weight="700" font-size="22">Generated portfolio artwork</text>
 </svg>"""
 
 
@@ -734,7 +731,6 @@ def home(request: Request):
     <div class="flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
       <div>
         <h2 class="text-2xl font-black tracking-tight">Portfolio</h2>
-        <p class="mt-2 text-sm text-slate-600">Generated “photo-like” boards. Click to open a preview modal.</p>
       </div>
       <a href="/portfolio" class="btn btn-ghost">Open full portfolio</a>
     </div>
@@ -786,7 +782,6 @@ def home(request: Request):
           <textarea name="message" class="field min-h-[120px]" placeholder="Job details (areas, repairs, timeframe)…" required></textarea>
           <button class="btn btn-primary w-full" type="submit">Send request</button>
           <div id="quoteResult"></div>
-          <div class="text-xs text-slate-600">Saved locally to SQLite when deployed.</div>
         </form>
       </div>
     </div>
@@ -798,7 +793,6 @@ def home(request: Request):
     <div class="flex items-center justify-between border-b border-white/10 px-5 py-4">
       <div>
         <div id="modalTitle" class="text-sm font-extrabold">Preview</div>
-        <div class="text-xs text-slate-600">Generated artwork</div>
       </div>
       <button id="modalClose" class="btn btn-ghost py-2 px-3 text-xs">Close</button>
     </div>
@@ -1167,7 +1161,7 @@ def portfolio(request: Request):
   <div class="reveal max-w-2xl">
     <h1 class="text-4xl font-black tracking-tight">Portfolio</h1>
     <p class="mt-3 text-lg text-slate-600">
-      Generated previews (swap for real photos later). Click any tile for a modal preview.
+      Click any tile for preview.
     </p>
   </div>
 
@@ -1181,7 +1175,6 @@ def portfolio(request: Request):
     <div class="flex items-center justify-between border-b border-white/10 px-5 py-4">
       <div>
         <div id="modalTitle" class="text-sm font-extrabold">Preview</div>
-        <div class="text-xs text-slate-600">Generated artwork</div>
       </div>
       <button id="modalClose" class="btn btn-ghost py-2 px-3 text-xs">Close</button>
     </div>
