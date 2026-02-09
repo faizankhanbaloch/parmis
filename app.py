@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, Response
+from fastapi.responses import HTMLResponse, Response,FileResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -237,6 +237,13 @@ def img_art(seed: int):
         "Apartment Repaint — Low Odour",
     ][seed % 8]
     return Response(svg_art(seed, label), media_type="image/svg+xml")
+
+@app.get("/admin/leads.xlsx")
+def download_leads():
+    path = "leads.xlsx"   # same as EXCEL_PATH
+    if not os.path.exists(path):
+        return Response("leads.xlsx not found yet", status_code=404)
+    return FileResponse(path, filename="leads.xlsx")
 
 
 # -----------------------------
