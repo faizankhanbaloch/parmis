@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, Response,FileResponse
+from fastapi.responses import HTMLResponse, Response, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 
@@ -13,6 +13,12 @@ import os
 import threading
 from datetime import datetime
 from openpyxl import Workbook, load_workbook
+
+import base64
+import hashlib
+import hmac
+import time
+
 
 EXCEL_PATH = "leads.xlsx"
 _excel_lock = threading.Lock()
@@ -76,6 +82,63 @@ DB_PATH = "leads.sqlite3"
 app = FastAPI(title=APP_NAME)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
+# -----------------------------
+# Admin auth (simple, no external deps)
+# - Admin logs in via /admin/login
+# - Download endpoint requires a signed session cookie
+# Configure via env vars:
+#   ADMIN_USER (default: admin)
+#   ADMIN_PASS (REQUIRED in production)
+#   ADMIN_SECRET_KEY (REQUIRED in production)
+#   COOKIE_SECURE=1 to force Secure cookies behind HTTPS
+# -----------------------------
+ADMIN_USER = os.getenv("ADMIN_USER", "admin")
+ADMIN_PASS = os.getenv("ADMIN_PASS", "")
+ADMIN_SECRET_KEY = os.getenv("ADMIN_SECRET_KEY", "")
+ADMIN_COOKIE_NAME = "admin_session"
+COOKIE_SECURE = os.getenv("COOKIE_SECURE", "0") == "1"
+SESSION_TTL_SECONDS = int(os.getenv("ADMIN_SESSION_TTL_SECONDS", "28800"))  # 8 hours
+
+def _b64url_encode(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).decode("utf-8").rstrip("=")
+
+def _b64url_decode(s: str) -> bytes:
+    pad = "=" * (-len(s) % 4)
+    return base64.urlsafe_b64decode(s + pad)
+
+def _sign(data: bytes) -> str:
+    # If ADMIN_SECRET_KEY is missing, signatures are weak; enforce in prod (see startup guard below).
+    key = (ADMIN_SECRET_KEY or "dev-insecure-secret").encode("utf-8")
+    return _b64url_encode(hmac.new(key, data, hashlib.sha256).digest())
+
+def _make_session(username: str) -> str:
+    exp = int(time.time()) + SESSION_TTL_SECONDS
+    payload = f"{username}|{exp}".encode("utf-8")
+    token = _b64url_encode(payload)
+    sig = _sign(payload)
+    return f"{token}.{sig}"
+
+def _verify_session(cookie_val: str | None) -> bool:
+    if not cookie_val:
+        return False
+    try:
+        token, sig = cookie_val.split(".", 1)
+        payload = _b64url_decode(token)
+        expected = _sign(payload)
+        if not hmac.compare_digest(sig, expected):
+            return False
+        parts = payload.decode("utf-8").split("|", 1)
+        if len(parts) != 2:
+            return False
+        username, exp_s = parts[0], parts[1]
+        if username != ADMIN_USER:
+            return False
+        if int(exp_s) < int(time.time()):
+            return False
+        return True
+    except Exception:
+        return False
+
 
 def init_db() -> None:
     with sqlite3.connect(DB_PATH) as con:
@@ -100,6 +163,10 @@ def init_db() -> None:
 @app.on_event("startup")
 def _startup() -> None:
     init_db()
+    # Basic safety: require secrets in production
+    if os.getenv("ENV", "").lower() == "production":
+        if not ADMIN_PASS or not ADMIN_SECRET_KEY:
+            raise RuntimeError("Missing ADMIN_PASS or ADMIN_SECRET_KEY env vars in production")
 
 
 # -----------------------------
@@ -235,12 +302,121 @@ def img_art(seed: int):
     ][seed % 8]
     return Response(svg_art(seed, label), media_type="image/svg+xml")
 
+# -----------------------------
+# Admin pages (login + protected download)
+# -----------------------------
+def _admin_login_page(error: str = "") -> str:
+    err_html = f'''
+      <div class="mt-4 rounded-2xl border border-rose-200 bg-rose-50 p-4 text-rose-800">
+        {error}
+      </div>
+    ''' if error else ""
+    return f'''
+<section class="w-full px-6 md:px-10 pb-14 pt-10 md:pt-14">
+  <div class="mx-auto max-w-md">
+    <div class="card p-7">
+      <div class="text-2xl font-black tracking-tight">Admin login</div>
+      <p class="mt-2 text-sm text-slate-600">Sign in to access leads export.</p>
+      {err_html}
+      <form class="mt-6 grid gap-3" method="post" action="/admin/login">
+        <input name="username" class="field" placeholder="Username" autocomplete="username" required/>
+        <input name="password" type="password" class="field" placeholder="Password" autocomplete="current-password" required/>
+        <button class="btn btn-primary w-full" type="submit">Login</button>
+      </form>
+      <div class="mt-3 text-xs text-slate-500">
+        Tip: set <span class="font-mono">ADMIN_USER</span>, <span class="font-mono">ADMIN_PASS</span>, <span class="font-mono">ADMIN_SECRET_KEY</span> env vars.
+      </div>
+    </div>
+  </div>
+</section>
+'''
+
+@app.get("/admin/login", response_class=HTMLResponse)
+def admin_login_get(request: Request):
+    return HTMLResponse(page("Admin login", "/admin/login", _admin_login_page()))
+
+@app.post("/admin/login")
+def admin_login_post(
+    request: Request,
+    username: str = Form(...),
+    password: str = Form(...),
+):
+    username = (username or "").strip()
+    password = (password or "").strip()
+
+    # Refuse login if admin password isn't configured (prevents accidental exposure)
+    if not ADMIN_PASS:
+        return HTMLResponse(
+            page("Admin login", "/admin/login", _admin_login_page("Admin login is not configured (missing ADMIN_PASS).")),
+            status_code=500,
+        )
+
+    if username != ADMIN_USER or password != ADMIN_PASS:
+        return HTMLResponse(
+            page("Admin login", "/admin/login", _admin_login_page("Invalid username or password.")),
+            status_code=401,
+        )
+
+    resp = RedirectResponse(url="/admin", status_code=303)
+    resp.set_cookie(
+        key=ADMIN_COOKIE_NAME,
+        value=_make_session(username),
+        httponly=True,
+        secure=COOKIE_SECURE,   # set COOKIE_SECURE=1 when behind HTTPS
+        samesite="lax",
+        max_age=SESSION_TTL_SECONDS,
+        path="/",
+    )
+    return resp
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin_home(request: Request):
+    if not _verify_session(request.cookies.get(ADMIN_COOKIE_NAME)):
+        return RedirectResponse(url="/admin/login", status_code=303)
+
+    content = f'''
+<section class="w-full px-6 md:px-10 pb-14 pt-10 md:pt-14">
+  <div class="mx-auto max-w-2xl">
+    <div class="card p-7">
+      <div class="flex items-center justify-between gap-4">
+        <div>
+          <div class="text-2xl font-black tracking-tight">Admin</div>
+          <div class="mt-1 text-sm text-slate-600">Export your leads securely.</div>
+        </div>
+        <a class="btn btn-ghost" href="/admin/logout">Logout</a>
+      </div>
+
+      <div class="mt-6 card2 p-6">
+        <div class="text-sm font-extrabold">Download leads</div>
+        <p class="mt-2 text-sm text-slate-600">Only accessible after login.</p>
+        <a class="mt-4 inline-flex btn btn-primary" href="/admin/leads.xlsx">Download leads.xlsx</a>
+      </div>
+    </div>
+  </div>
+</section>
+'''
+    return HTMLResponse(page("Admin", "/admin", content))
+
+@app.get("/admin/logout")
+def admin_logout():
+    resp = RedirectResponse(url="/admin/login", status_code=303)
+    resp.delete_cookie(key=ADMIN_COOKIE_NAME, path="/")
+    return resp
+
 @app.get("/admin/leads.xlsx")
-def download_leads():
-    path = "leads.xlsx"   # same as EXCEL_PATH
+def admin_download_leads(request: Request):
+    if not _verify_session(request.cookies.get(ADMIN_COOKIE_NAME)):
+        return RedirectResponse(url="/admin/login", status_code=303)
+
+    path = EXCEL_PATH
     if not os.path.exists(path):
         return Response("leads.xlsx not found yet", status_code=404)
-    return FileResponse(path, filename="leads.xlsx")
+
+    return FileResponse(
+        path,
+        filename="leads.xlsx",
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 # -----------------------------
